@@ -24,6 +24,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.yaml")
 PROMPT_INTRO_PATH = os.path.join(SCRIPT_DIR, "prompt_intro.txt")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "generated_images")
+PHOTOS_DIR = os.path.join(SCRIPT_DIR, "photos")
 
 IMAGE_SIZE = "1024x1024"      # Square — ideal for a circular plate composition
 IMAGE_QUALITY = "high"        # Best quality available on the plan
@@ -62,6 +63,43 @@ def load_prompt_intro(path: str) -> str:
         sys.exit(f"ERROR: prompt_intro.txt not found at '{path}'.")
     with open(path, "r") as f:
         return f.read().strip()
+
+
+def normalize_name_for_file(name: str) -> str:
+    """
+    Normalize a name to match the filename format in the photos directory.
+    - Strip leading/trailing whitespace
+    - Remove "Mr." and "Ms." prefixes (case-insensitive)
+    - Convert to lowercase
+    - Replace spaces with underscores
+    """
+    normalized = name.strip()
+    # Remove Mr. or Ms. prefix (with optional space after the period)
+    normalized = re.sub(r'^(Mr\.|Ms\.)\s*', '', normalized, flags=re.IGNORECASE)
+    normalized = normalized.strip()
+    # Convert to lowercase and replace spaces with underscores
+    normalized = normalized.lower().replace(' ', '_')
+    return normalized
+
+
+def load_drawing_instructions_from_file(name: str) -> str | None:
+    """
+    Attempt to load drawing instructions from a text file in the photos directory.
+    Returns the file contents if found, None otherwise.
+    """
+    normalized_name = normalize_name_for_file(name)
+    file_path = os.path.join(PHOTOS_DIR, f"{normalized_name}.txt")
+    
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r") as f:
+                content = f.read().strip()
+                if content:
+                    return content
+        except Exception as e:
+            print(f"  WARNING: Could not read {file_path}: {e}")
+    
+    return None
 
 
 def sheet_url_to_csv_url(url: str) -> str:
@@ -124,9 +162,22 @@ def fetch_students(sheets_url: str) -> list[tuple[str, str, str]]:
         name = row[0].strip()
         superlative = row[1].strip()
         drawing_instructions = row[2].strip()
-        if not name or not superlative or not drawing_instructions:
-            print(f"  WARNING: Row {i} is missing name, superlative, or drawing_instructions — skipping.")
+        
+        # Check for required fields
+        if not name or not superlative:
+            print(f"  WARNING: Row {i} is missing name or superlative — skipping.")
             continue
+        
+        # If drawing_instructions is empty, try to load from file
+        if not drawing_instructions:
+            print(f"  INFO: Row {i} ({name}) has no drawing_instructions, checking photos directory...")
+            drawing_instructions = load_drawing_instructions_from_file(name)
+            if drawing_instructions:
+                print(f"  ✓ Loaded drawing instructions from photos/{normalize_name_for_file(name)}.txt")
+            else:
+                print(f"  WARNING: Row {i} ({name}) has no drawing_instructions and no matching file found — skipping.")
+                continue
+        
         students.append((name, superlative, drawing_instructions))
 
     print(f"  Found {len(students)} student(s).")
