@@ -218,21 +218,6 @@ def find_photo(name: str) -> str | None:
     return None
 
 
-def _encode_photo(photo_path: str) -> tuple[str, str]:
-    """Read a photo and return (base64_string, mime_type)."""
-    ext = os.path.splitext(photo_path)[1].lower()
-    mime_map = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-    }
-    mime_type = mime_map.get(ext, "image/jpeg")
-    with open(photo_path, "rb") as f:
-        b64 = base64.standard_b64encode(f.read()).decode("utf-8")
-    return b64, mime_type
-
-
 def generate_and_save_image(
     client: OpenAI,
     prompt: str,
@@ -262,41 +247,23 @@ def generate_and_save_image(
 
     try:
         if photo_path:
-            # ── Multi-modal: text prompt + reference photo via Responses API ──
-            b64, mime_type = _encode_photo(photo_path)
+            # ── Multi-modal: text prompt + reference photo via images.edit() ──
+            # gpt-image-1 supports image inputs through images.edit() without a mask,
+            # which lets it use the photo as a reference while generating new content.
             full_prompt = (
-                f"REFERENCE PHOTO: The image attached is a real photo of the student. "
+                f"REFERENCE PHOTO: The attached image is a real photo of the student. "
                 f"Use it to capture their likeness in the cartoon.\n\n{prompt}"
             )
-            response = client.responses.create(
-                model=image_model,
-                input=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_image",
-                                "image_url": f"data:{mime_type};base64,{b64}",
-                            },
-                            {
-                                "type": "input_text",
-                                "text": full_prompt,
-                            },
-                        ],
-                    }
-                ],
-            )
-            # Extract base64 image from the Responses API output
-            image_data = None
-            for item in response.output:
-                if hasattr(item, "type") and item.type == "image_generation_call":
-                    image_data = item.result
-                    break
-            if image_data is None:
-                raise ValueError(
-                    f"No image_generation_call found in response output. "
-                    f"Output types: {[getattr(o, 'type', '?') for o in response.output]}"
+            with open(photo_path, "rb") as photo_file:
+                response = client.images.edit(
+                    model=image_model,
+                    image=photo_file,
+                    prompt=full_prompt,
+                    size=IMAGE_SIZE,
+                    quality=IMAGE_QUALITY,
+                    n=1,
                 )
+            image_data = response.data[0].b64_json
         else:
             # ── Text-only: standard Images API ──
             response = client.images.generate(
@@ -374,7 +341,24 @@ def main():
         photo = find_photo(name)
         if photo:
             print(f"  📷  Reference photo: {os.path.basename(photo)}")
+
         prompt = build_prompt(prompt_intro, superlative, drawing_instructions)
+
+        # Print the full text prompt being sent
+        print(f"  ── Prompt ──────────────────────────────────────────")
+        if photo:
+            print(f"  [+ reference photo: {os.path.basename(photo)}]")
+            full_display = (
+                f"REFERENCE PHOTO: The attached image is a real photo of the student. "
+                f"Use it to capture their likeness in the cartoon.\n\n{prompt}"
+            )
+            for line in full_display.splitlines():
+                print(f"  {line}")
+        else:
+            for line in prompt.splitlines():
+                print(f"  {line}")
+        print(f"  ────────────────────────────────────────────────────")
+
         success = generate_and_save_image(client, prompt, output_path, name, image_model, photo)
 
         if success:
