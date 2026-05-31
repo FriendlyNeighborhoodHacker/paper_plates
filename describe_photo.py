@@ -28,16 +28,41 @@ PHOTOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "photos")
 
 VISION_MODEL = "gpt-4o"
 
-PROMPT = (
-    "I am creating a hand-drawn cartoon character for a school art project. "
-    "Please describe the physical appearance of the person in this photo in detail, "
-    "focusing on features an artist would need to draw a recognizable cartoon version of them: "
-    "face shape, hair color and style, eye color and shape, skin tone, eyebrow shape, "
-    "nose shape, any distinctive features like freckles or dimples, approximate age range, "
-    "and what they are wearing. "
-    "Do not identify or name the person — just describe their visible physical features "
-    "as an artist's reference."
-)
+PROMPT = """I am creating a hand-drawn cartoon caricature of a high school student for a school art project. \
+Please provide a detailed artist's reference description of the person in this photo. \
+Do NOT identify or name the person — describe only their visible physical features.
+
+Cover each of the following in specific detail:
+
+FACE SHAPE: Describe the overall face shape (oval, round, square, heart, oblong, diamond). \
+Describe the jawline (sharp/soft/square/tapered/rounded), chin shape (pointed/rounded/wide/cleft), \
+and cheekbone prominence (high/flat/prominent).
+
+HAIR: Exact color with nuance (e.g. "dark chestnut brown", "sandy dirty-blonde", not just "brown"). \
+Texture (fine/medium/thick; straight/wavy/curly/coily). Length. How it is parted or styled. \
+Volume and density. Any distinctive qualities (tousled, sleek, wispy, frizzy, layered).
+
+EYES: Size relative to the face (large/medium/small). Shape (almond/round/hooded/deep-set/wide-set/close-set). \
+Color with detail (e.g. "warm hazel with green flecks", not just "brown"). \
+Lash density. Whether they appear bright/sleepy/intense/expressive.
+
+EYEBROWS: Thickness (pencil-thin/medium/thick/bushy). Shape (strongly arched/gently arched/straight/slightly curved). \
+Color. Groomed vs natural. Distance above the eyes.
+
+NOSE: Bridge width (narrow/medium/wide) and height (flat/medium/prominent). \
+Tip shape (rounded/pointed/wide/bulbous/button/upturned). Nostril shape (flared/narrow/average). \
+Overall nose size relative to the face (small/medium/large/prominent).
+
+MOUTH & LIPS: Upper lip shape and fullness (thin/medium/full; pronounced cupid's bow or flat). \
+Lower lip fullness. Width of mouth (wide smile, narrow mouth, average). Any notable features.
+
+SKIN: Specific tone (e.g. fair/light/medium/olive/tan/warm brown/deep) and undertone (warm/cool/neutral). \
+Freckles (none/light scattered/moderate/heavy), moles, dimples, or other notable texture.
+
+MOST DISTINCTIVE FEATURES: List the 2-3 features that most define this person's look — \
+what a caricaturist would exaggerate to make them immediately recognizable.
+
+CLOTHING (visible): Briefly describe what they are wearing."""
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
@@ -79,7 +104,7 @@ def describe_photo(photo_path: str, client: OpenAI) -> str:
                 ],
             }
         ],
-        max_tokens=1024,
+        max_tokens=2048,
     )
 
     return response.choices[0].message.content.strip()

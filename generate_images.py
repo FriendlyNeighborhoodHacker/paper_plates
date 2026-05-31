@@ -202,15 +202,49 @@ def build_prompt(prompt_intro: str, superlative: str, drawing_instructions: str)
     )
 
 
+PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"]
+
+def find_photo(name: str) -> str | None:
+    """
+    Look for a reference photo in the photos/ directory matching the student's name.
+    Uses the same filename normalization as the .txt file lookup.
+    Returns the full path to the photo if found, None otherwise.
+    """
+    normalized = normalize_name_for_file(name)
+    for ext in PHOTO_EXTENSIONS:
+        path = os.path.join(PHOTOS_DIR, normalized + ext)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _encode_photo(photo_path: str) -> tuple[str, str]:
+    """Read a photo and return (base64_string, mime_type)."""
+    ext = os.path.splitext(photo_path)[1].lower()
+    mime_map = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }
+    mime_type = mime_map.get(ext, "image/jpeg")
+    with open(photo_path, "rb") as f:
+        b64 = base64.standard_b64encode(f.read()).decode("utf-8")
+    return b64, mime_type
+
+
 def generate_and_save_image(
     client: OpenAI,
     prompt: str,
     output_path: str,
     name: str,
     image_model: str = DEFAULT_IMAGE_MODEL,
+    photo_path: str | None = None,
 ) -> bool:
     """
-    Call the OpenAI Images API and save the result to output_path.
+    Call the OpenAI image generation API and save the result to output_path.
+    If photo_path is provided, sends the reference photo alongside the prompt
+    using the Responses API (multi-modal input).
     Prints elapsed seconds in-place while waiting for the API response.
     Returns True on success, False on failure.
     """
@@ -227,21 +261,57 @@ def generate_and_save_image(
     timer_thread.start()
 
     try:
-        response = client.images.generate(
-            model=image_model,
-            prompt=prompt,
-            size=IMAGE_SIZE,
-            quality=IMAGE_QUALITY,
-            n=1,
-            # gpt-image-1 always returns base64 in response.data[0].b64_json
-        )
+        if photo_path:
+            # ── Multi-modal: text prompt + reference photo via Responses API ──
+            b64, mime_type = _encode_photo(photo_path)
+            full_prompt = (
+                f"REFERENCE PHOTO: The image attached is a real photo of the student. "
+                f"Use it to capture their likeness in the cartoon.\n\n{prompt}"
+            )
+            response = client.responses.create(
+                model=image_model,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:{mime_type};base64,{b64}",
+                            },
+                            {
+                                "type": "input_text",
+                                "text": full_prompt,
+                            },
+                        ],
+                    }
+                ],
+            )
+            # Extract base64 image from the Responses API output
+            image_data = None
+            for item in response.output:
+                if hasattr(item, "type") and item.type == "image_generation_call":
+                    image_data = item.result
+                    break
+            if image_data is None:
+                raise ValueError(
+                    f"No image_generation_call found in response output. "
+                    f"Output types: {[getattr(o, 'type', '?') for o in response.output]}"
+                )
+        else:
+            # ── Text-only: standard Images API ──
+            response = client.images.generate(
+                model=image_model,
+                prompt=prompt,
+                size=IMAGE_SIZE,
+                quality=IMAGE_QUALITY,
+                n=1,
+            )
+            image_data = response.data[0].b64_json
 
         stop_event.set()
         elapsed = int(time.time() - start_time)
 
-        image_data = response.data[0].b64_json
         image_bytes = base64.b64decode(image_data)
-
         with open(output_path, "wb") as f:
             f.write(image_bytes)
 
@@ -301,8 +371,11 @@ def main():
             skipped += 1
             continue
 
+        photo = find_photo(name)
+        if photo:
+            print(f"  📷  Reference photo: {os.path.basename(photo)}")
         prompt = build_prompt(prompt_intro, superlative, drawing_instructions)
-        success = generate_and_save_image(client, prompt, output_path, name, image_model)
+        success = generate_and_save_image(client, prompt, output_path, name, image_model, photo)
 
         if success:
             successes += 1
