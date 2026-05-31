@@ -1,0 +1,6 @@
+# Copy this file to config.yaml and fill in your credentials.
+# config.yaml is gitignored — never commit it.
+
+OPENAI_API_KEY: "your-openai-api-key-here"
+GOOGLE_SHEETS_URL: "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
+IMAGE_MODEL: "gpt-image-1"   # Options: gpt-image-1, gpt-image-2
