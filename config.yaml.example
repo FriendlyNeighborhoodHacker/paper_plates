@@ -3,4 +3,5 @@
 
 OPENAI_API_KEY: "your-openai-api-key-here"
 GOOGLE_SHEETS_URL: "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
-IMAGE_MODEL: "gpt-image-1"   # Options: gpt-image-1, gpt-image-2
+IMAGE_MODEL: "gpt-image-2"   # Options: gpt-image-1, gpt-image-2
+PARALLEL_WORKERS: 3          # Number of simultaneous image generations (1 = sequential)

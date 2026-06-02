@@ -8,11 +8,14 @@ then generates paper plate award images using OpenAI's image generation API.
 import base64
 import csv
 import io
+import logging
 import os
 import re
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 import requests
 import yaml
@@ -25,6 +28,7 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.yaml")
 PROMPT_INTRO_PATH = os.path.join(SCRIPT_DIR, "prompt_intro.txt")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "generated_images")
 PHOTOS_DIR = os.path.join(SCRIPT_DIR, "photos")
+LOGS_DIR = os.path.join(SCRIPT_DIR, "logs")
 
 IMAGE_SIZE = "1024x1024"      # Square — ideal for a circular plate composition
 IMAGE_QUALITY = "high"        # Best quality available on the plan
@@ -34,6 +38,44 @@ INTER_REQUEST_DELAY = 3
 
 # Default model if not specified in config
 DEFAULT_IMAGE_MODEL = "gpt-image-1"
+
+# Module-level logger (configured in main())
+logger = logging.getLogger("paper_plates")
+
+
+def setup_logging() -> str:
+    """
+    Configure logging to write to both the terminal and a timestamped log file.
+    Terminal: no timestamp (clean live output).
+    File: timestamp + level + message (permanent record).
+    Returns the log file path.
+    """
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    run_ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_path = os.path.join(LOGS_DIR, f"generate_{run_ts}.log")
+
+    logger.setLevel(logging.DEBUG)
+
+    # Terminal handler — clean, no timestamp
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(logging.Formatter("%(message)s"))
+
+    # File handler — timestamped
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s  %(levelname)-5s  %(message)s",
+                          datefmt="%Y-%m-%d %H:%M:%S")
+    )
+
+    logger.addHandler(stream_handler)
+    logger.addHandler(file_handler)
+    return log_path
+
+
+# Thread-safe log (logging module is already thread-safe)
+_safe_print = logger.info
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -164,8 +206,11 @@ def fetch_students(sheets_url: str) -> list[tuple[str, str, str]]:
         drawing_instructions = row[2].strip()
         
         # Check for required fields
-        if not name or not superlative:
-            print(f"  WARNING: Row {i} is missing name or superlative — skipping.")
+        if not name:
+            print(f"  WARNING: Row {i} has no name — skipping.")
+            continue
+        if not superlative:
+            print(f"  WARNING: Row {i} ({name}) has no superlative — skipping.")
             continue
         
         # If drawing_instructions is empty, try to load from file
@@ -225,35 +270,44 @@ def generate_and_save_image(
     name: str,
     image_model: str = DEFAULT_IMAGE_MODEL,
     photo_path: str | None = None,
+    label: str = "",
 ) -> bool:
     """
     Call the OpenAI image generation API and save the result to output_path.
-    If photo_path is provided, sends the reference photo alongside the prompt
-    using the Responses API (multi-modal input).
-    Prints elapsed seconds in-place while waiting for the API response.
+    If photo_path is provided, sends the reference photo via images.edit().
+    If label is provided (parallel mode), prints prefixed lines instead of \r timer.
     Returns True on success, False on failure.
     """
     start_time = time.time()
+    parallel = bool(label)
     stop_event = threading.Event()
 
-    def _timer():
-        """Background thread: update elapsed time on the same line every second."""
-        while not stop_event.wait(1):
-            elapsed = int(time.time() - start_time)
-            print(f"\r  ⏳  Generating...  {elapsed}s ", end="", flush=True)
+    logger.info(f"Starting to generate image for {name}")
+
+    if not parallel:
+        # Sequential mode: in-place \r timer (updates every second)
+        def _timer():
+            while not stop_event.wait(1):
+                elapsed = int(time.time() - start_time)
+                print(f"\r  ⏳  Generating...  {elapsed}s ", end="", flush=True)
+    else:
+        # Parallel mode: log a heartbeat every 10 seconds
+        def _timer():
+            interval = 10
+            while not stop_event.wait(interval):
+                elapsed = int(time.time() - start_time)
+                logger.info(f"{label} ⏳  {elapsed}s...")
 
     timer_thread = threading.Thread(target=_timer, daemon=True)
     timer_thread.start()
 
     try:
         if photo_path:
-            # ── Multi-modal: text prompt + reference photo via images.edit() ──
-            # gpt-image-1 supports image inputs through images.edit() without a mask,
-            # which lets it use the photo as a reference while generating new content.
             full_prompt = (
                 f"REFERENCE PHOTO: The attached image is a real photo of the student. "
                 f"Use it to capture their likeness in the cartoon.\n\n{prompt}"
             )
+            logger.info(f"Sending prompt for {name} (+ reference photo {os.path.basename(photo_path)}):\n{full_prompt}")
             with open(photo_path, "rb") as photo_file:
                 response = client.images.edit(
                     model=image_model,
@@ -263,9 +317,8 @@ def generate_and_save_image(
                     quality=IMAGE_QUALITY,
                     n=1,
                 )
-            image_data = response.data[0].b64_json
         else:
-            # ── Text-only: standard Images API ──
+            logger.info(f"Sending prompt for {name}:\n{prompt}")
             response = client.images.generate(
                 model=image_model,
                 prompt=prompt,
@@ -273,26 +326,92 @@ def generate_and_save_image(
                 quality=IMAGE_QUALITY,
                 n=1,
             )
-            image_data = response.data[0].b64_json
 
-        stop_event.set()
+        image_data = response.data[0].b64_json
         elapsed = int(time.time() - start_time)
 
         image_bytes = base64.b64decode(image_data)
         with open(output_path, "wb") as f:
             f.write(image_bytes)
 
-        # Overwrite the timer line with the success message
-        print(f"\r  ✅  Saved: {os.path.basename(output_path)}  ({elapsed}s)          ")
+        stop_event.set()
+        logger.info(f"Generated image successfully for {name} ({elapsed}s)  →  {os.path.basename(output_path)}")
+        if not parallel:
+            print(f"\r  ✅  Saved: {os.path.basename(output_path)}  ({elapsed}s)          ")
         return True
 
     except Exception as e:
-        stop_event.set()
         elapsed = int(time.time() - start_time)
-        # Move past the timer line, then print the full error
-        print(f"\r  ❌  Failed for '{name}':  ({elapsed}s)                  ")
-        print(f"      {e}")
+        stop_event.set()
+        logger.error(f"Failed to generate image for {name} ({elapsed}s): {e}")
+        if not parallel:
+            print(f"\r")  # move past the timer line
         return False
+
+
+# ── Worker ───────────────────────────────────────────────────────────────────
+
+def _process_student(
+    i: int,
+    total: int,
+    name: str,
+    superlative: str,
+    drawing_instructions: str,
+    client: OpenAI,
+    prompt_intro: str,
+    image_model: str,
+    parallel: bool,
+) -> str:
+    """
+    Process one student: build prompt, optionally find reference photo,
+    call the API, and save the image.
+    Returns "success", "skipped", or "failed".
+    """
+    filename = sanitize_filename(name) + ".png"
+    output_path = os.path.join(OUTPUT_DIR, filename)
+    label = f"[{i}/{total}] {name}:"
+
+    if os.path.exists(output_path):
+        logger.info(f"{label} ⏭️  Already exists — skipping.")
+        return "skipped"
+
+    photo = find_photo(name)
+    prompt = build_prompt(prompt_intro, superlative, drawing_instructions)
+
+    # Build the display version of the prompt
+    if photo:
+        full_display = (
+            f"REFERENCE PHOTO: The attached image is a real photo of the student. "
+            f"Use it to capture their likeness in the cartoon.\n\n{prompt}"
+        )
+    else:
+        full_display = prompt
+
+    # Print the prompt block (thread-safe)
+    lines = []
+    lines.append(f"\n{label}")
+    if photo:
+        lines.append(f"  📷  Reference photo: {os.path.basename(photo)}")
+    lines.append(f"  ── Prompt {'─' * 42}")
+    if photo:
+        lines.append(f"  [+ reference photo: {os.path.basename(photo)}]")
+    for line in full_display.splitlines():
+        lines.append(f"  {line}")
+    lines.append(f"  {'─' * 50}")
+    if parallel:
+        lines.append(f"  ⏳  Generating...")
+    logger.info("\n".join(lines))
+
+    success = generate_and_save_image(
+        client=client,
+        prompt=prompt,
+        output_path=output_path,
+        name=name,
+        image_model=image_model,
+        photo_path=photo,
+        label=label if parallel else "",
+    )
+    return "success" if success else "failed"
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -302,79 +421,88 @@ def main():
     print("  Paper Plate Awards — Image Generator")
     print("=" * 60)
 
+    # 0. Set up logging
+    log_path = setup_logging()
+
     # 1. Load config & prompt intro
-    print("\n[1/4] Loading configuration…")
+    logger.info("\n[1/4] Loading configuration…")
     config = load_config(CONFIG_PATH)
     prompt_intro = load_prompt_intro(PROMPT_INTRO_PATH)
-    print("  Config and prompt intro loaded.")
+    workers = int(config.get("PARALLEL_WORKERS", 1))
+    logger.info(f"  Config and prompt intro loaded.")
+    logger.info(f"  Log file: {log_path}")
 
     # 2. Fetch student data from Google Sheets
-    print("\n[2/4] Fetching student data from Google Sheets…")
+    logger.info("\n[2/4] Fetching student data from Google Sheets…")
     students = fetch_students(config["GOOGLE_SHEETS_URL"])
 
     # 3. Set up output directory and OpenAI client
-    print("\n[3/4] Setting up output directory and OpenAI client…")
+    logger.info("\n[3/4] Setting up output directory and OpenAI client…")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     client = OpenAI(api_key=config["OPENAI_API_KEY"])
     image_model = config.get("IMAGE_MODEL", DEFAULT_IMAGE_MODEL)
-    print(f"  Output directory: {OUTPUT_DIR}")
-    print(f"  Model: {image_model}  |  Size: {IMAGE_SIZE}  |  Quality: {IMAGE_QUALITY}")
+    logger.info(f"  Output directory: {OUTPUT_DIR}")
+    logger.info(f"  Model: {image_model}  |  Size: {IMAGE_SIZE}  |  Quality: {IMAGE_QUALITY}")
+    logger.info(f"  Parallel workers: {workers}")
 
     # 4. Generate images
-    print(f"\n[4/4] Generating {len(students)} image(s)…\n")
+    total = len(students)
+    logger.info(f"\n[4/4] Generating {total} image(s) with {workers} worker(s)…\n")
     successes = 0
     skipped = 0
     failures = 0
+    failed_names: list[str] = []
 
-    for i, (name, superlative, drawing_instructions) in enumerate(students, start=1):
-        filename = sanitize_filename(name) + ".png"
-        output_path = os.path.join(OUTPUT_DIR, filename)
-
-        print(f"[{i}/{len(students)}] {name}")
-
-        # Skip if already generated
-        if os.path.exists(output_path):
-            print(f"  ⏭️  Already exists — skipping. (Delete file to regenerate.)")
-            skipped += 1
-            continue
-
-        photo = find_photo(name)
-        if photo:
-            print(f"  📷  Reference photo: {os.path.basename(photo)}")
-
-        prompt = build_prompt(prompt_intro, superlative, drawing_instructions)
-
-        # Print the full text prompt being sent
-        print(f"  ── Prompt ──────────────────────────────────────────")
-        if photo:
-            print(f"  [+ reference photo: {os.path.basename(photo)}]")
-            full_display = (
-                f"REFERENCE PHOTO: The attached image is a real photo of the student. "
-                f"Use it to capture their likeness in the cartoon.\n\n{prompt}"
+    if workers <= 1:
+        # ── Sequential mode ──────────────────────────────────────
+        for i, (name, superlative, drawing_instructions) in enumerate(students, start=1):
+            result = _process_student(
+                i, total, name, superlative, drawing_instructions,
+                client, prompt_intro, image_model, parallel=False,
             )
-            for line in full_display.splitlines():
-                print(f"  {line}")
-        else:
-            for line in prompt.splitlines():
-                print(f"  {line}")
-        print(f"  ────────────────────────────────────────────────────")
+            if result == "success":
+                successes += 1
+            elif result == "skipped":
+                skipped += 1
+            else:
+                failures += 1
+                failed_names.append(name)
+            if i < total and result != "skipped":
+                time.sleep(INTER_REQUEST_DELAY)
 
-        success = generate_and_save_image(client, prompt, output_path, name, image_model, photo)
+    else:
+        # ── Parallel mode ────────────────────────────────────────
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for i, (name, superlative, drawing_instructions) in enumerate(students, start=1):
+                future = executor.submit(
+                    _process_student,
+                    i, total, name, superlative, drawing_instructions,
+                    client, prompt_intro, image_model, True,
+                )
+                futures[future] = name
 
-        if success:
-            successes += 1
-        else:
-            failures += 1
-
-        # Polite delay between requests (skip after last one)
-        if i < len(students):
-            time.sleep(INTER_REQUEST_DELAY)
+            for future in as_completed(futures):
+                name = futures[future]
+                result = future.result()
+                if result == "success":
+                    successes += 1
+                elif result == "skipped":
+                    skipped += 1
+                else:
+                    failures += 1
+                    failed_names.append(name)
 
     # Summary
-    print("\n" + "=" * 60)
-    print(f"  Done!  ✅ {successes} generated  |  ⏭️ {skipped} skipped  |  ❌ {failures} failed")
-    print(f"  Images saved to: {OUTPUT_DIR}")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info(f"  Done!  ✅ {successes} generated  |  ⏭️ {skipped} skipped  |  ❌ {failures} failed")
+    if failed_names:
+        logger.info(f"\n  Failed students:")
+        for fn in sorted(failed_names):
+            logger.info(f"    • {fn}")
+    logger.info(f"\n  Images saved to: {OUTPUT_DIR}")
+    logger.info(f"  Log saved to:    {log_path}")
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":

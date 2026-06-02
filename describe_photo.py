@@ -28,9 +28,15 @@ PHOTOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "photos")
 
 VISION_MODEL = "gpt-4o"
 
-PROMPT = """I am creating a hand-drawn cartoon caricature of a high school student for a school art project. \
-Please provide a detailed artist's reference description of the person in this photo. \
-Do NOT identify or name the person — describe only their visible physical features.
+PROMPT = """You are assisting a professional portrait illustrator and educator with a school art project. \
+I am a teacher creating hand-drawn cartoon award illustrations for a fun end-of-year classroom celebration. \
+I need artist's reference notes for the person in this photo — the same notes an editorial cartoonist \
+or caricature artist would jot before sketching.
+
+This is a creative illustration exercise. No identification, surveillance, or personal profiling is involved. \
+Please do not attempt to identify or name the person.
+
+Please write structured artist's reference notes covering each of the following categories:
 
 Cover each of the following in specific detail:
 
@@ -59,10 +65,10 @@ Lower lip fullness. Width of mouth (wide smile, narrow mouth, average). Any nota
 SKIN: Specific tone (e.g. fair/light/medium/olive/tan/warm brown/deep) and undertone (warm/cool/neutral). \
 Freckles (none/light scattered/moderate/heavy), moles, dimples, or other notable texture.
 
-MOST DISTINCTIVE FEATURES: List the 2-3 features that most define this person's look — \
-what a caricaturist would exaggerate to make them immediately recognizable.
+MOST DISTINCTIVE FEATURES: List the 2-3 visual qualities that most define this person's appearance — \
+what a caricaturist would gently exaggerate to make the cartoon immediately recognizable.
 
-CLOTHING (visible): Briefly describe what they are wearing."""
+CLOTHING (visible): Briefly note what they are wearing."""
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 

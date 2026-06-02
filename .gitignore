@@ -33,3 +33,6 @@ ENV/
 
 # Student photos (contain personal images — do not commit)
 photos/
+
+# Run logs
+logs/
